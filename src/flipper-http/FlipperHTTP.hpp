@@ -76,6 +76,7 @@ Change Log:
     - Added command.hpp/cpp to handle all command parsing
     - Added an HTTP class to handle all HTTP requests and moved the request and stream methods to that class
     - Added a WebSocket class to handle all WebSocket connections and moved the WebSocket methods to that class
+    - Added [POST/FILE] command to upload files over HTTP and stream the response back over UART
     - Bumped version to 2.1.6
 */
 #pragma once
