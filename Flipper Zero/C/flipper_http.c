@@ -35,62 +35,59 @@ static int32_t flipper_http_worker(void *context)
         }
         if (events & WorkerEvtRxDone)
         {
-            // Continuously read from the stream buffer until it's empty
-            while (!furi_stream_buffer_is_empty(fhttp->flipper_http_stream))
+            // Drain the stream buffer in chunks
+            uint8_t chunk[128];
+            size_t received;
+            while ((received = furi_stream_buffer_receive(fhttp->flipper_http_stream, chunk, sizeof(chunk), 0)) > 0)
             {
-                // Read one byte at a time
-                char c = 0;
-                size_t received = furi_stream_buffer_receive(fhttp->flipper_http_stream, &c, 1, 0);
-
-                if (received == 0)
-                {
-                    // No more data to read
-                    break;
-                }
-
                 fhttp->bytes_received += received;
 
                 // print amount of bytes received
                 // FURI_LOG_I(HTTP_TAG, "Bytes received: %d", fhttp->bytes_received);
 
-                // Append the received byte to the file if saving is enabled
-                if (fhttp->save_bytes)
+                for (size_t i = 0; i < received; i++)
                 {
-                    // Add byte to the buffer
-                    fhttp->file_buffer[fhttp->file_buffer_len++] = c;
-                    // Write to file if buffer is full
-                    if (fhttp->file_buffer_len >= FILE_BUFFER_SIZE)
+                    char c = (char)chunk[i];
+
+                    // Append the received byte to the file if saving is enabled
+                    if (fhttp->save_bytes)
                     {
-                        if (!flipper_http_append_to_file(
-                                fhttp->file_buffer,
-                                fhttp->file_buffer_len,
-                                fhttp->just_started_bytes,
-                                fhttp->file_path))
+                        // Add byte to the buffer
+                        fhttp->file_buffer[fhttp->file_buffer_len++] = c;
+                        // Write to file if buffer is full
+                        if (fhttp->file_buffer_len >= FILE_BUFFER_SIZE)
                         {
-                            FURI_LOG_E(HTTP_TAG, "Failed to append data to file");
+                            if (!flipper_http_append_to_file(
+                                    fhttp->file_buffer,
+                                    fhttp->file_buffer_len,
+                                    fhttp->just_started_bytes,
+                                    fhttp->file_path))
+                            {
+                                FURI_LOG_E(HTTP_TAG, "Failed to append data to file");
+                            }
+                            fhttp->file_buffer_len = 0;
+                            fhttp->just_started_bytes = false;
                         }
-                        fhttp->file_buffer_len = 0;
-                        fhttp->just_started_bytes = false;
                     }
-                }
 
-                // Handle line buffering only if callback is set (text data)
-                if (fhttp->handle_rx_line_cb)
-                {
-                    // Handle line buffering
-                    if (c == '\n' || rx_line_pos >= RX_LINE_BUFFER_SIZE - 1)
+                    // Handle line buffering only if callback is set (text data)
+                    if (fhttp->handle_rx_line_cb)
                     {
-                        fhttp->rx_line_buffer[rx_line_pos] = '\0'; // Null-terminate the line
+                        // Handle line buffering
+                        if (c == '\n' || rx_line_pos >= RX_LINE_BUFFER_SIZE - 1)
+                        {
+                            fhttp->rx_line_buffer[rx_line_pos] = '\0'; // Null-terminate the line
 
-                        // Invoke the callback with the complete line
-                        fhttp->handle_rx_line_cb(fhttp->rx_line_buffer, fhttp->callback_context);
+                            // Invoke the callback with the complete line
+                            fhttp->handle_rx_line_cb(fhttp->rx_line_buffer, fhttp->callback_context);
 
-                        // Reset the line buffer position
-                        rx_line_pos = 0;
-                    }
-                    else
-                    {
-                        fhttp->rx_line_buffer[rx_line_pos++] = c; // Add character to the line buffer
+                            // Reset the line buffer position
+                            rx_line_pos = 0;
+                        }
+                        else
+                        {
+                            fhttp->rx_line_buffer[rx_line_pos++] = c; // Add character to the line buffer
+                        }
                     }
                 }
             }
@@ -122,8 +119,12 @@ static void _flipper_http_rx_callback(
     }
     if (event == FuriHalSerialRxEventData)
     {
-        uint8_t data = furi_hal_serial_async_rx(handle);
-        furi_stream_buffer_send(fhttp->flipper_http_stream, &data, 1, 0);
+        uint8_t data = 0;
+        while (furi_hal_serial_async_rx_available(handle))
+        {
+            data = furi_hal_serial_async_rx(handle);
+            furi_stream_buffer_send(fhttp->flipper_http_stream, &data, 1, 0);
+        }
         furi_thread_flags_set(fhttp->rx_thread_id, WorkerEvtRxDone);
     }
 }
@@ -1010,6 +1011,7 @@ bool flipper_http_send_command(FlipperHTTP *fhttp, HTTPCommand command)
     case HTTP_CMD_IP_ADDRESS:
         return flipper_http_send_data(fhttp, "[IP/ADDRESS]");
     case HTTP_CMD_IP_WIFI:
+        fhttp->method = GET;
         return flipper_http_send_data(fhttp, "[WIFI/IP]");
     case HTTP_CMD_SCAN:
         fhttp->method = GET;
@@ -1237,6 +1239,12 @@ static void flipper_http_rx_callback(const char *line, void *context)
             strncpy(fhttp->last_response, trimmed_line, RX_BUF_SIZE);
         }
     }
+    // Invoke per-line user callback if registered (before freeing trimmed_line)
+    if (trimmed_line != NULL && trimmed_line[0] != '\0' && fhttp->user_rx_line_cb)
+    {
+        fhttp->user_rx_line_cb(trimmed_line, fhttp->user_callback_context);
+    }
+
     free(trimmed_line); // Free the allocated memory for trimmed_line
 
     if (fhttp->state != INACTIVE && fhttp->state != ISSUE)
@@ -1579,64 +1587,6 @@ static void flipper_http_rx_callback(const char *line, void *context)
 }
 
 /**
- * @brief      Send a request to the specified URL to start a WebSocket connection.
- * @return     true if the request was successful, false otherwise.
- * @param fhttp The FlipperHTTP context
- * @param      url  The URL to send the WebSocket request to.
- * @param port The port to connect to
- * @param headers The headers to send with the WebSocket request
- * @note       The received data will be handled asynchronously via the callback.
- */
-bool flipper_http_websocket_start(FlipperHTTP *fhttp, const char *url, uint16_t port, const char *headers)
-{
-    if (!fhttp)
-    {
-        FURI_LOG_E(HTTP_TAG, "Failed to get context.");
-        return false;
-    }
-    if (!url || !headers)
-    {
-        FURI_LOG_E("FlipperHTTP", "Invalid arguments provided to flipper_http_websocket_start.");
-        return false;
-    }
-
-    // Prepare WebSocket request command with headers
-    char command[512];
-    int ret = snprintf(
-        command,
-        sizeof(command),
-        "[SOCKET/START]{\"url\":\"%s\",\"port\":%d,\"headers\":%s}",
-        url,
-        port,
-        headers);
-
-    if (ret < 0 || ret >= (int)sizeof(command))
-    {
-        FURI_LOG_E("FlipperHTTP", "Failed to format WebSocket start command with headers.");
-        return false;
-    }
-
-    // Send WebSocket request via UART
-    return flipper_http_send_data(fhttp, command);
-}
-
-/**
- * @brief      Send a request to stop the WebSocket connection.
- * @return     true if the request was successful, false otherwise.
- * @param fhttp The FlipperHTTP context
- * @note       The received data will be handled asynchronously via the callback.
- */
-bool flipper_http_websocket_stop(FlipperHTTP *fhttp)
-{
-    if (!fhttp)
-    {
-        FURI_LOG_E(HTTP_TAG, "Failed to get context.");
-        return false;
-    }
-    return flipper_http_send_data(fhttp, "[SOCKET/STOP]");
-}
-
-/**
  * @brief      Upload a file from the SD card to a URL via POST.
  * @return     true if all bytes were sent successfully, false otherwise.
  * @param fhttp The FlipperHTTP context
@@ -1772,4 +1722,62 @@ bool flipper_http_upload_file(FlipperHTTP *fhttp, const char *url, const char *f
     }
 
     return success;
+}
+
+/**
+ * @brief      Send a request to the specified URL to start a WebSocket connection.
+ * @return     true if the request was successful, false otherwise.
+ * @param fhttp The FlipperHTTP context
+ * @param      url  The URL to send the WebSocket request to.
+ * @param port The port to connect to
+ * @param headers The headers to send with the WebSocket request
+ * @note       The received data will be handled asynchronously via the callback.
+ */
+bool flipper_http_websocket_start(FlipperHTTP *fhttp, const char *url, uint16_t port, const char *headers)
+{
+    if (!fhttp)
+    {
+        FURI_LOG_E(HTTP_TAG, "Failed to get context.");
+        return false;
+    }
+    if (!url || !headers)
+    {
+        FURI_LOG_E("FlipperHTTP", "Invalid arguments provided to flipper_http_websocket_start.");
+        return false;
+    }
+
+    // Prepare WebSocket request command with headers
+    char command[512];
+    int ret = snprintf(
+        command,
+        sizeof(command),
+        "[SOCKET/START]{\"url\":\"%s\",\"port\":%d,\"headers\":%s}",
+        url,
+        port,
+        headers);
+
+    if (ret < 0 || ret >= (int)sizeof(command))
+    {
+        FURI_LOG_E("FlipperHTTP", "Failed to format WebSocket start command with headers.");
+        return false;
+    }
+
+    // Send WebSocket request via UART
+    return flipper_http_send_data(fhttp, command);
+}
+
+/**
+ * @brief      Send a request to stop the WebSocket connection.
+ * @return     true if the request was successful, false otherwise.
+ * @param fhttp The FlipperHTTP context
+ * @note       The received data will be handled asynchronously via the callback.
+ */
+bool flipper_http_websocket_stop(FlipperHTTP *fhttp)
+{
+    if (!fhttp)
+    {
+        FURI_LOG_E(HTTP_TAG, "Failed to get context.");
+        return false;
+    }
+    return flipper_http_send_data(fhttp, "[SOCKET/STOP]");
 }
