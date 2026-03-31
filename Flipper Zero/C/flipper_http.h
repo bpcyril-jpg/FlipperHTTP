@@ -24,9 +24,9 @@ extern "C"
 #define UART_CH (FuriHalSerialIdUsart)    // UART channel
 #define TIMEOUT_DURATION_TICKS (5 * 1000) // 5 seconds
 #define BAUDRATE (115200)                 // UART baudrate
-#define RX_BUF_SIZE 2048                  // UART RX buffer size
-#define RX_LINE_BUFFER_SIZE 2048          // UART RX line buffer size (increase for large responses)
-#define MAX_FILE_SHOW 2048                // Maximum data from file to show
+#define RX_BUF_SIZE (1024 * 2)            // UART RX buffer size
+#define RX_LINE_BUFFER_SIZE (1024 * 2)    // UART RX line buffer size
+#define MAX_FILE_SHOW (1024 * 2)          // Maximum data from file to show
 #define FILE_BUFFER_SIZE 512              // File buffer size
 
     // Forward declaration for callback
@@ -105,6 +105,8 @@ extern "C"
         size_t content_length;                    // Length of the content received
         int status_code;                          // HTTP status code
         bool file_ready;                          // Indicates the board is ready for file upload bytes
+        FlipperHTTP_Callback user_rx_line_cb;     // Optional per-line callback (called for every received line)
+        void *user_callback_context;              // Context passed to user_rx_line_cb
     } FlipperHTTP;
 
     /**
@@ -234,6 +236,18 @@ extern "C"
     bool flipper_http_send_data(FlipperHTTP *fhttp, const char *data);
 
     /**
+     * @brief      Upload a file from the SD card to a URL via POST.
+     * @return     true if all bytes were sent successfully, false otherwise.
+     * @param fhttp The FlipperHTTP context
+     * @param url  The URL to upload to.
+     * @param file_path Full path to the file on the SD card.
+     * @param content_type The MIME content type (e.g. "text/plain").
+     * @param headers Optional JSON headers string, or NULL.
+     * @note       After this returns true, poll fhttp->state for IDLE to know the response is complete.
+     */
+    bool flipper_http_upload_file(FlipperHTTP *fhttp, const char *url, const char *file_path, const char *content_type, const char *headers);
+
+    /**
      * @brief      Send a request to the specified URL to start a WebSocket connection.
      * @return     true if the request was successful, false otherwise.
      * @param fhttp The FlipperHTTP context
@@ -251,18 +265,6 @@ extern "C"
      * @note       The received data will be handled asynchronously via the callback.
      */
     bool flipper_http_websocket_stop(FlipperHTTP *fhttp);
-
-    /**
-     * @brief      Upload a file from the SD card to a URL via POST.
-     * @return     true if all bytes were sent successfully, false otherwise.
-     * @param fhttp The FlipperHTTP context
-     * @param url  The URL to upload to.
-     * @param file_path Full path to the file on the SD card.
-     * @param content_type The MIME content type (e.g. "text/plain").
-     * @param headers Optional JSON headers string, or NULL.
-     * @note       After this returns true, poll fhttp->state for IDLE to know the response is complete.
-     */
-    bool flipper_http_upload_file(FlipperHTTP *fhttp, const char *url, const char *file_path, const char *content_type, const char *headers);
 
 #ifdef __cplusplus
 }
