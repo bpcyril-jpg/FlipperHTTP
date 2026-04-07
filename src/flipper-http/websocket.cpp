@@ -1,5 +1,4 @@
 #include "websocket.hpp"
-#include "wifi_utils.hpp"
 
 #define MAX_WS_CHUNK_SIZE 128
 
@@ -26,8 +25,7 @@ bool WebSocket::connect(
     const char *headerValues[],
     int headerSize)
 {
-    WiFiClient wifi_client;
-    this->ws_client = new WebSocketClient(wifi_client, serverName, port);
+    this->ws_client = new WebSocketClient(this->wifi_client, serverName, port);
 
     // Send headers, if any
     for (int i = 0; i < headerSize; i++)

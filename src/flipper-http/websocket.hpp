@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoHttpClient.h>
+#include "wifi_utils.hpp"
 
 class WebSocket
 {
@@ -24,4 +25,5 @@ public:
 
 private:
     WebSocketClient *ws_client;
+    WiFiClient wifi_client;
 };
