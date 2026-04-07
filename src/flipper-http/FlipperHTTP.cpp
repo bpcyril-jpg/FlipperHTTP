@@ -3,7 +3,7 @@ Author: JBlanked
 Github: https://github.com/jblanked/FlipperHTTP
 Info: This library is a wrapper around the HTTPClient library and is used to communicate with the FlipperZero over serial.
 Created: 2024-09-30
-Updated: 2026-03-26
+Updated: 2026-04-07
 */
 
 #include "FlipperHTTP.hpp"
@@ -1107,16 +1107,30 @@ void FlipperHTTP::loop()
                 }
             }
 
-            this->websocket = new WebSocket();
-
-            if (!this->websocket || !this->websocket->connect(serverName.c_str(), port, path.c_str(), headerKeys, headerValues, headerSize))
+            if (!this->websocket)
             {
-                this->uart->println(F("[ERROR] WebSocket connection failed."));
+                this->websocket = new WebSocket();
+            }
+
+            if (!this->websocket)
+            {
+                this->uart->println(F("[ERROR] Failed to allocate WebSocket object."));
+                this->led.off();
+                return;
+            }
+
+            if (!this->websocket->connect(serverName.c_str(), port, path.c_str(), headerKeys, headerValues, headerSize))
+            {
+                char headerResponse[128];
+                snprintf(headerResponse, sizeof(headerResponse), "[ERROR] Failed to connect WebSocket to %s:%d%s", serverName.c_str(), port, path.c_str());
+                this->uart->println(headerResponse);
                 this->led.off();
                 return;
             }
 
             this->uart->println(F("[SOCKET/CONNECTED]"));
+
+            delay(100);
 
             // Check if a message is available from the server:
             String receivedMessage = this->websocket->recv();
@@ -1129,13 +1143,17 @@ void FlipperHTTP::loop()
             // Wait for incoming serial/client data, and send back-n-forth
             String uartMessage = "";
             String wsMessage = "";
-            while (this->websocket->isConnected() && !uartMessage.startsWith("[SOCKET/STOP]"))
+            while (this->websocket->isConnected())
             {
                 // Check if there's incoming serial data
                 if (this->uart->available() > 0)
                 {
                     // Read the incoming serial data until newline
                     uartMessage = this->uart->readSerialLine();
+                    if (uartMessage.startsWith("[SOCKET/STOP]"))
+                    {
+                        break;
+                    }
                     this->websocket->send(uartMessage);
                     uartMessage = ""; // Clear the message after sending
                 }
